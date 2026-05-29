@@ -1,11 +1,13 @@
 # Streaming of wikipedia events using Kafka #
-This simple Python script makes use of the [EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams) web service which exposes a stream of structured events over HTTP following SSE protocol. Those events include information about the editing of wikipedia web pages, creation of new ones and more. For the sake of this project we filter out only the events related to the editing of existings pages. Those events are being parsed into an appropriate format and get sent back to a Kafka topic.
+This simple Python script makes use of the [EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams) web service which exposes a stream of structured events over HTTP following SSE protocol. Those events include information about the editing of wikipedia web pages, creation of new ones and more. For the sake of this project we filter out only the events related to the editing of existing pages. Those events are being parsed into an appropriate format and get sent back to a Kafka topic.
+
+The producer maintains a persistent connection to the stream and automatically reconnects if the connection drops, resuming from the last received event using `Last-Event-ID`.
 
 We construct events that are sent to Kafka with the following format:
 ```json
 {
 "id": 1426354584, 
-"domain": "www.wikidata.org", 
+"domain": "en.wikipedia.org", 
 "namespace": "main namespace", 
 "title": "articles_title", 
 "timestamp": "2021-03-14T21:55:14Z", 
@@ -17,26 +19,29 @@ We construct events that are sent to Kafka with the following format:
 ```
 
 ## In order to reproduce this project ##
-- Start a Kafka Broker at localhost:9092.
+- Start a Kafka Broker and note its bootstrap server address.
 - Create a topic named **wikipedia-events**
 
-More info on how to start up Kafka Broker create a topic, produce messages and consume them can be found [here](https://kafka.apache.org/quickstart).
-
 ### Run without Docker ###
-Create a Python 3 virtual environment installing all needed libraries using requirements.txt file included in this project:
+Create a Python 3 virtual environment and install dependencies:
 
 ```sh
-python3 -m venv kafka_venv
-source kafka_venv/bin/activate
+python3 -m venv kafaka_venv
+source kafaka_venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Εxecute the wikipedia_events_kafka_producer.py file
+Execute the producer:
 ```sh
-python wikipedia_events_kafka_producer.py 
+python wikipedia_events_kafka_producer.py
 ```
 
-You can pass arguments in order to change the limit of events to produce, host and port of kafka broker and destination topic, for more info:
+The default bootstrap server is `192.168.4.201:9094`. Override with arguments:
+```sh
+python wikipedia_events_kafka_producer.py --bootstrap_server localhost:9092 --topic_name wikipedia-events
+```
+
+For all options:
 ```sh
 python wikipedia_events_kafka_producer.py -h
 ```
@@ -49,16 +54,13 @@ docker build -t wikipedia_events_kafka_producer .
 
 Run docker app:
 ```sh
-docker run --network="host" wikipedia_events_kafka_producer
+docker run wikipedia_events_kafka_producer
 ```
 
-You can provide your arguments like that:
+Override the bootstrap server if needed:
 ```sh
-docker run --network="host" wikipedia_events_kafka_producer --events_to_produce=10000
+docker run wikipedia_events_kafka_producer --bootstrap_server localhost:9092
 ```
-
-**Note:** It is important to use `--network="host"` option in order to point the container to the docker host.
-
 
 ## Medium article ##
-You can find the complete tutorial [in this Medium article](https://towardsdatascience.com/introduction-to-apache-kafka-with-wikipedias-eventstreams-service-d06d4628e8d9).
+You can find the original tutorial [in this Medium article](https://towardsdatascience.com/introduction-to-apache-kafka-with-wikipedias-eventstreams-service-d06d4628e8d9).
