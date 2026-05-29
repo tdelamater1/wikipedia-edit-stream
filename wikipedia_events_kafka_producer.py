@@ -25,25 +25,28 @@ def create_kafka_producer(bootstrap_server):
         exit(1)
 
 
-def construct_event(event_data, user_types):
+def construct_event(event_data):
     try:
         namespace = namespace_dict[event_data['namespace']]
     except KeyError:
         namespace = 'unknown'
 
-    user_type = user_types[event_data['bot']]
     length = event_data.get('length', {})
+    revision = event_data.get('revision', {})
 
     return {
         "id": event_data['id'],
         "domain": event_data['meta']['domain'],
         "namespace": namespace,
         "title": event_data['title'],
+        "comment": event_data.get('comment', ''),
         "timestamp": event_data['meta']['dt'],
         "user_name": event_data['user'],
-        "user_type": user_type,
+        "minor": event_data.get('minor', False),
         "old_length": length.get('old'),
         "new_length": length.get('new'),
+        "revision_old": revision.get('old'),
+        "revision_new": revision.get('new'),
     }
 
 
@@ -84,7 +87,6 @@ if __name__ == "__main__":
     args = parse_command_line_arguments()
     producer = create_kafka_producer(args.bootstrap_server)
     namespace_dict = init_namespaces()
-    user_types = {True: 'bot', False: 'human'}
 
     url = 'https://stream.wikimedia.org/v2/stream/recentchange'
     last_event_id = None
@@ -107,9 +109,11 @@ if __name__ == "__main__":
                         event_data = json.loads(event.data)
                     except ValueError:
                         continue
-                    if event_data.get('type') == 'edit':
+                    if (event_data.get('type') == 'edit'
+                            and event_data.get('meta', {}).get('domain') == 'en.wikipedia.org'
+                            and not event_data.get('bot')):
                         try:
-                            event_to_send = construct_event(event_data, user_types)
+                            event_to_send = construct_event(event_data)
                             producer.send(args.topic_name, value=event_to_send)
                             backoff = 1
                         except Exception as e:
