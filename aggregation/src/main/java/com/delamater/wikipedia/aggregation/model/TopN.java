@@ -15,7 +15,9 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
  * window stats, so a later edit just overwrites the earlier entry) and bounds memory by
  * pruning the lowest-hotness page once it exceeds {@code maxTracked}. A pruned page that
  * keeps getting edits simply re-enters with its updated cumulative score, so top-N stays
- * correct as long as {@code maxTracked >= n}.
+ * correct as long as {@code maxTracked >= n}. A page that arrives with a non-positive score
+ * is treated as excluded (a rollback) and removed — so a page that turns into a rollback
+ * mid-window drops out instead of lingering with a stale score.
  */
 public class TopN {
 
@@ -29,6 +31,12 @@ public class TopN {
     public TopN merge(ScoredPage page, int maxTracked) {
         this.windowStart = page.windowStart();
         this.windowEnd = page.windowEnd();
+        // A non-positive score marks an excluded page (rollback/self-revert): drop it if we
+        // were tracking it and never add it. Legitimate pages always score > 0.
+        if (page.hotnessScore() <= 0) {
+            pages.remove(page.title());
+            return this;
+        }
         pages.put(page.title(), page);
         if (pages.size() > maxTracked) {
             pages.entrySet().stream()

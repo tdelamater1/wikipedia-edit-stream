@@ -68,6 +68,10 @@ public class AggregationTopology {
     private int maxTracked;
     @Value("${app.filter.main-namespace-only}")
     private boolean mainNamespaceOnly;
+    @Value("${app.hotness.edit-saturation}")
+    private int editSaturation;
+    @Value("${app.hotness.byte-saturation}")
+    private long byteSaturation;
 
     public AggregationTopology(ObjectMapper mapper, HotTopicsWriter writer) {
         this.mapper = mapper;
@@ -80,6 +84,8 @@ public class AggregationTopology {
         JacksonSerde<PageAgg> pageAggSerde = new JacksonSerde<>(mapper, PageAgg.class);
         JacksonSerde<ScoredPage> scoredSerde = new JacksonSerde<>(mapper, ScoredPage.class);
         JacksonSerde<TopN> topNSerde = new JacksonSerde<>(mapper, TopN.class);
+
+        Hotness hotness = new Hotness(editSaturation, byteSaturation);
 
         TimeWindows windows = TimeWindows
                 .ofSizeAndGrace(Duration.ofMinutes(windowSizeMinutes), Duration.ofMinutes(windowGraceMinutes))
@@ -107,16 +113,22 @@ public class AggregationTopology {
 
         // Collapse to a single key (windowEnd) and rank.
         // note: does a pivot on the key
+        // Excluded pages (rollbacks) are scored Hotness.EXCLUDED and pass through so the
+        // top-N can drop them — important when a page *becomes* a rollback mid-window.
         KStream<Long, ScoredPage> scored = perPage.toStream()
                 .map((windowedKey, agg) -> {
                     long start = windowedKey.window().start();
                     long end = windowedKey.window().end();
                     String title = windowedKey.key();
-                    double hotness = agg.getEditCount() * Math.log(1 + agg.distinctEditors());
+                    double score = hotness.score(agg);
+                    if (score <= Hotness.EXCLUDED && log.isDebugEnabled()) {
+                        log.debug("excluding rollback: title='{}', edits={}, editors={}, netBytes={}",
+                                title, agg.getEditCount(), agg.distinctEditors(), agg.getBytesChanged());
+                    }
                     ScoredPage page = new ScoredPage(
                             title, PageUrls.of(agg.getDomain(), title),
                             agg.getEditCount(), agg.distinctEditors(), agg.getBytesChanged(),
-                            hotness, start, end);
+                            score, start, end);
                     return KeyValue.pair(end, page);
                 });
 
@@ -131,8 +143,9 @@ public class AggregationTopology {
 
         topN.toStream().foreach((windowEnd, top) -> writer.write(top, topnSize));
 
-        log.info("Topology built: topic='{}', window={}m/advance={}m/grace={}m, topN={}, mainNsOnly={}",
-                topic, windowSizeMinutes, windowAdvanceMinutes, windowGraceMinutes, topnSize, mainNamespaceOnly);
+        log.info("Topology built: topic='{}', window={}m/advance={}m/grace={}m, topN={}, mainNsOnly={}, editSat={}, byteSat={}",
+                topic, windowSizeMinutes, windowAdvanceMinutes, windowGraceMinutes, topnSize, mainNamespaceOnly,
+                editSaturation, byteSaturation);
         return raw;
     }
 
