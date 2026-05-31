@@ -1,66 +1,83 @@
-# Streaming of wikipedia events using Kafka #
-This simple Python script makes use of the [EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams) web service which exposes a stream of structured events over HTTP following SSE protocol. Those events include information about the editing of wikipedia web pages, creation of new ones and more. For the sake of this project we filter out only the events related to the editing of existing pages. Those events are being parsed into an appropriate format and get sent back to a Kafka topic.
+# producer — Wikipedia EventStreams → Kafka
 
-The producer maintains a persistent connection to the stream and automatically reconnects if the connection drops, resuming from the last received event using `Last-Event-ID`.
+The **source connector** for the `wikipedia-edit-stream` pipeline. A small Python service that
+holds a persistent connection to the Wikimedia
+[EventStreams](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams) `recentchange`
+SSE feed, keeps **non-bot edits to `en.wikipedia.org`**, reshapes each one, and produces it to
+the Kafka topic `wikipedia-events`.
 
-We construct events that are sent to Kafka with the following format:
+It's the `producer/` module of the `wikipedia-edit-stream` monorepo and runs **in-cluster**
+(GitOps manifests in `homelab_argocd/k8s/wikipedia-producer`, single replica). It began as a
+standalone repo (`kafka-wikipedia-data-stream`, now archived) based on
+[this Medium tutorial](https://towardsdatascience.com/introduction-to-apache-kafka-with-wikipedias-eventstreams-service-d06d4628e8d9).
+
+## Event format — the `wikipedia-events` contract
+
+This is the shared schema the downstream `ingest` consumer (and `aggregation`) depend on, so
+changes here are a contract change:
+
 ```json
 {
-"id": 1426354584, 
-"domain": "en.wikipedia.org", 
-"namespace": "main namespace", 
-"title": "articles_title", 
-"timestamp": "2021-03-14T21:55:14Z", 
-"user_name": "a_user_name", 
-"user_type": "human", 
-"old_length": 6019, 
-"new_length": 8687
+  "id": 1426354584,
+  "domain": "en.wikipedia.org",
+  "namespace": "main namespace",
+  "title": "Article_title",
+  "comment": "edit summary",
+  "timestamp": "2026-05-31T21:55:14Z",
+  "user_name": "a_user_name",
+  "minor": false,
+  "old_length": 6019,
+  "new_length": 8687,
+  "revision_old": 1426354000,
+  "revision_new": 1426354584
 }
 ```
 
-## In order to reproduce this project ##
-- Start a Kafka Broker and note its bootstrap server address.
-- Create a topic named **wikipedia-events**
+## Reliability / good-citizen behavior
 
-### Run without Docker ###
-Create a Python 3 virtual environment and install dependencies:
+- Persistent SSE connection; **resumes via `Last-Event-ID`** on reconnect.
+- Descriptive **`User-Agent`** with a contact email (Wikimedia asks for this).
+- **1s cooldown** before reconnecting after a clean stream end (Wikimedia rotates long-lived
+  connections routinely); **exponential backoff 1s→60s** on errors, reset after a good send.
+- `(connect, read)` timeouts so a silently stalled stream is detected and reconnected —
+  important for an unattended in-cluster service.
+
+## Configuration
+
+Env vars (used by the in-cluster ConfigMap), each overridable by a CLI arg:
+
+| Env | CLI | Default |
+|-----|-----|---------|
+| `BOOTSTRAP_SERVER` | `--bootstrap_server` | `192.168.4.201:9094` (external listener, for local runs) |
+| `TOPIC_NAME` | `--topic_name` | `wikipedia-events` |
+
+In-cluster the ConfigMap points `BOOTSTRAP_SERVER` at Kafka's internal listener
+(`runnyeye-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092`).
+
+## Run locally
 
 ```sh
 python3 -m venv kafaka_venv
 source kafaka_venv/bin/activate
 pip install -r requirements.txt
+
+python wikipedia_events_kafka_producer.py            # uses defaults / env vars
+# or override:
+python wikipedia_events_kafka_producer.py --bootstrap_server localhost:9092
+python wikipedia_events_kafka_producer.py -h         # all options
 ```
 
-Execute the producer:
+## Build + push the image
+
 ```sh
-python wikipedia_events_kafka_producer.py
+docker build -t ghcr.io/tdelamater1/wikipedia-producer:0.1.0 .
+docker push ghcr.io/tdelamater1/wikipedia-producer:0.1.0
 ```
 
-The default bootstrap server is `192.168.4.201:9094`. Override with arguments:
-```sh
-python wikipedia_events_kafka_producer.py --bootstrap_server localhost:9092 --topic_name wikipedia-events
-```
+## Deploy (in-cluster)
 
-For all options:
-```sh
-python wikipedia_events_kafka_producer.py -h
-```
+Manifests live in `homelab_argocd/k8s/wikipedia-producer/` (ArgoCD app, ConfigMap, single-
+replica Deployment). See that README for the bootstrap steps.
 
-### Run with Docker ###
-Build docker image:
-```sh
-docker build -t wikipedia_events_kafka_producer .
-```
-
-Run docker app:
-```sh
-docker run wikipedia_events_kafka_producer
-```
-
-Override the bootstrap server if needed:
-```sh
-docker run wikipedia_events_kafka_producer --bootstrap_server localhost:9092
-```
-
-## Medium article ##
-You can find the original tutorial [in this Medium article](https://towardsdatascience.com/introduction-to-apache-kafka-with-wikipedias-eventstreams-service-d06d4628e8d9).
+> **Single replica only.** Two producers would each read the firehose and double-produce every
+> event; the aggregation counts every Kafka message, so a second producer inflates edit counts.

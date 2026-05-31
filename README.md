@@ -1,38 +1,72 @@
 # wikipedia-edit-stream
 
-Downstream stream-processing pipeline for live Wikipedia edits. The
-[`kafka-wikipedia-data-stream`](https://github.com/tdelamater1/kafka-wikipedia-data-stream)
-producer (Python, run from a laptop) streams English-Wikipedia edits into the Kafka topic
-`wikipedia-events` on the homelab k3s cluster. This repo consumes that topic, enriches and
-aggregates it into MongoDB, and serves a live dashboard.
+This project sources [https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service](wikipedia event stream) edits and creates a real time 10 top dashboard for `hot` topics.  
 
+```mermaid
+flowchart TB
+  WM["Wikimedia EventStreams (SSE)"]
 
-## Components (monorepo)
+  subgraph K3s["k3s cluster"]
+    subgraph NSA["namespace: wikipedia"]
+      PROD["Python producer <br/>(source connector)"]
+      INGEST["Ingest / ETL consumer<br/>Java"]
+      AGG["Kafka Streams aggregation<br/>Java"]
+      DASH["Dashboard backend<br/>Go + WebSocket"]
+    end
+    subgraph NSK["namespace: kafka"]
+      KAFKA["Kafka topic<br/>wikipedia-events"]
+    end
+    subgraph NSM["namespace: mongodb"]
+      MONGO[("MongoDB (rs: mongodb)<br/>edits · hot_topics")]
+    end
+  end
 
-| Dir            | Lang             | Role                                                                 | Status |
-|----------------|------------------|---------------------------------------------------------------------|--------|
-| `ingest/`      | Java (Spring Boot) | Consume `wikipedia-events` → enrich → MongoDB `edits`              | **Phase 1 (current)** |
-| _aggregation/_ | Java (Kafka Streams) | Windowed top-N + spike detection → `page_stats`/`hot_topics`/`alerts` | Phase 2 |
-| _dashboard/_   | Go               | Mongo change stream → WebSocket → live top-10 browser UI            | Phase 3 |
+  UI["Browser — live top-10 + alerts"]
 
-## Architecture (two streaming layers)
+  WM -->|SSE| PROD
+  PROD -->|produce JSON| KAFKA
+  KAFKA --> INGEST
+  KAFKA --> AGG
+  INGEST -->|edits| MONGO
+  AGG -->|page_stats / hot_topics / alerts| MONGO
+  MONGO -. change stream .-> DASH
+  DASH -. "WebSocket (via NPM → Traefik)" .-> UI
+```
 
-Change streams do **not** replace Kafka Streams — they solve a different problem:
+# Hotness Scoring
+
+Everything is in **editor-units**: one distinct editor = 1 point. Additional scoring is normalized on this unit
 
 ```
-Wikimedia SSE → [Python producer, laptop] → Kafka (wikipedia-events, in-cluster)
-   ├─ [ingest/]            Java  → Mongo: edits
-   └─ [aggregation/]       Java  → Mongo: page_stats, hot_topics, alerts
-                                      │
-              Mongo change stream ◀───┘
-                  └─ [dashboard/]  Go: change stream → WebSocket → browser
+EXCLUDE if  bytesChanged == 0  AND  distinctEditors <= 2  AND  editCount >= 2   (rollback)
+
+hotness = distinctEditors                                  ← linear, uncapped (diversity dominates)
+        + 2.0 × min(1, ln(1 + editCount)      / ln(1 + S)) ← edit volume:  sub-linear, cap 2
+        + 1.0 × min(1, ln(1 + |bytesChanged|) / ln(1 + B)) ← byte change:  sub-linear, cap 1
 ```
 
-- **Kafka Streams** sits *between* Kafka and Mongo (ETL + windowed aggregation).
-- **Change streams** sit *after* Mongo (push DB changes to the dashboard — no polling).
+- `S` = **edit-saturation** (default 10): editCount at which the +2 bonus maxes out.
+- `B` = **byte-saturation** (default 2000): `|net bytes|` at which the +1 bonus maxes out.
+- Both are ConfigMap knobs (`HOTNESS_EDIT_SATURATION`, `HOTNESS_BYTE_SATURATION`).
 
-## Infra
+## Design rationale
 
-MongoDB runs in-cluster as a single-node replica set (`replSet=mongodb`) via the MongoDB
-Community Operator, managed by ArgoCD in the `homelab_argocd` repo (`k8s/mongodb/`). The
-replica set is required for change streams. See that repo's `k8s/mongodb/README.md`.
+- **Distinct editors dominate** → linear and *uncapped*. Nothing else grows without bound, so breadth of participation always wins eventually.
+- **Raw edits sub-linearised (ln) and capped at 2** → a prolific single editor / bot can't buy rank with volume; the 50th edit barely moves the needle.
+- **Byte change is a tiebreaker, capped at 1** → rewards substantial content change without dominating. Uses `|net bytes|` (abs of the signed sum), *not* churn — so an edit war's back-and-forth earns no credit.
+- **Single-editor ceiling = 4.0** (`1 self + 2 edit-cap + 1 byte-cap`) = four distinct editors' worth. Any page with 5+ distinct editors always outranks any single-editor page.
+
+Excluded pages score 0 and are **removed** from the top-N (`TopN.merge` drops score ≤ 0).
+
+## Worked examples (S = 10, B = 2000)
+
+| edits | editors      | net bytes | hotness                          |
+| ----- | ------------ | --------- | -------------------------------- |
+| 3     | 1 (same)     | +300      | 2.91                             |
+| 2     | 2 (distinct) | +400      | **3.71**                         |
+| 2     | 2 (distinct) | 0         | *excluded*                       |
+| 10    | 1 (same)     | +1000     | 3.91                             |
+| 50    | 1 (same)     | +5000     | **4.00** ← single-editor ceiling |
+| 3     | 3 (distinct) | +200      | 4.85                             |
+| 5     | 5 (distinct) | +1500     | 7.46                             |
+
