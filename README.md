@@ -2,6 +2,9 @@
 
 This project sources [wikipedia event stream](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service) edits and creates a real time 10 top dashboard for `hot` topics.  
 
+<img width="1705" height="497" alt="image" src="https://github.com/user-attachments/assets/5f74b692-9c05-4d85-974d-297e47c6faec" />
+
+
 ```mermaid
 flowchart TB
   WM["Wikimedia EventStreams (SSE)"]
