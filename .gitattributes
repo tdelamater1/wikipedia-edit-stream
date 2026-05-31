@@ -1,0 +1,10 @@
+# Normalize line endings: let Git decide for text files, pin the rest.
+* text=auto
+
+# Windows scripts must keep CRLF.
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# Unix scripts (incl. the Maven wrapper) must keep LF.
+mvnw   text eol=lf
+*.sh   text eol=lf
