@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wikipedia Hot Topics</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f1117; color: #e6e6e6; }
+    header { padding: 1rem 1.5rem; border-bottom: 1px solid #262b36; display: flex;
+             align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+    h1 { font-size: 1.25rem; margin: 0; }
+    .meta { color: #8b93a7; font-size: .85rem; }
+    #status { margin-left: auto; font-size: .8rem; padding: .2rem .6rem; border-radius: 999px; }
+    .up   { background: #14361f; color: #5fd28a; }
+    .down { background: #3a1620; color: #f08ca0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .55rem 1.5rem; border-bottom: 1px solid #1c212b; }
+    th { color: #8b93a7; font-weight: 600; font-size: .75rem; text-transform: uppercase;
+         letter-spacing: .04em; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.flash { animation: flash 1s ease-out; }
+    @keyframes flash { from { background: #1e2a44; } to { background: transparent; } }
+    a { color: #7ca7ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .rank { color: #8b93a7; width: 2.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔥 Wikipedia Hot Topics</h1>
+    <span class="meta" id="window">waiting for data…</span>
+    <span id="status" class="down">connecting…</span>
+  </header>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="rank">#</th>
+        <th>Page</th>
+        <th class="num">Edits</th>
+        <th class="num">Editors</th>
+        <th class="num">Bytes Δ</th>
+        <th class="num">Hotness</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const windowEl = document.getElementById("window");
+    const rowsEl = document.getElementById("rows");
+
+    function setStatus(up, text) {
+      statusEl.textContent = text;
+      statusEl.className = up ? "up" : "down";
+    }
+
+    const fmt = new Intl.NumberFormat();
+    function time(iso) { return new Date(iso).toLocaleTimeString(); }
+
+    // A page's "activity" fingerprint — flash only when one of these changes, not on every
+    // refresh. Rank is deliberately excluded so a row that merely shifts position (because
+    // some other page moved) doesn't flash.
+    function signature(p) {
+      return `${p.editCount}|${p.distinctEditors}|${p.bytesChanged}|${p.hotnessScore}`;
+    }
+
+    // null until the first payload, so the initial paint populates without flashing everything.
+    let prevSig = null;
+
+    function render(data) {
+      windowEl.textContent =
+        `window ${time(data.windowStart)} – ${time(data.windowEnd)} · updated ${time(data.generatedAt)}`;
+
+      const nextSig = new Map();
+      rowsEl.replaceChildren();
+      for (const p of data.topPages || []) {
+        const sig = signature(p);
+        nextSig.set(p.title, sig);
+        // Flash if this page is newly in the top-10, or its activity changed since last update.
+        const changed = prevSig !== null && (!prevSig.has(p.title) || prevSig.get(p.title) !== sig);
+
+        const tr = document.createElement("tr");
+        if (changed) tr.className = "flash";
+        tr.innerHTML = `
+          <td class="rank">${p.rank}</td>
+          <td><a href="${p.pageUrl}" target="_blank" rel="noopener">${p.title}</a></td>
+          <td class="num">${fmt.format(p.editCount)}</td>
+          <td class="num">${fmt.format(p.distinctEditors)}</td>
+          <td class="num">${fmt.format(p.bytesChanged)}</td>
+          <td class="num">${p.hotnessScore.toFixed(2)}</td>`;
+        rowsEl.appendChild(tr);
+      }
+      prevSig = nextSig;
+    }
+
+    // WebSocket has no built-in reconnect (unlike SSE), so we reconnect with a capped backoff.
+    let backoff = 1000;
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+      ws.onopen = () => { setStatus(true, "live"); backoff = 1000; };
+      ws.onmessage = (e) => { render(JSON.parse(e.data)); };
+      ws.onclose = () => {
+        setStatus(false, "reconnecting…");
+        setTimeout(connect, backoff);
+        backoff = Math.min(backoff * 2, 15000);
+      };
+      ws.onerror = () => ws.close();
+    }
+    connect();
+  </script>
+</body>
+</html>
