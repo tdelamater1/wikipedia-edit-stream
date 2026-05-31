@@ -1,0 +1,13 @@
+# Build output (per-module .gitignore files cover the rest)
+**/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS
+.DS_Store
