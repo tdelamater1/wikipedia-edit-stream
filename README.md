@@ -1,6 +1,6 @@
 # wikipedia-edit-stream
 
-This project sources [https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service](wikipedia event stream) edits and creates a real time 10 top dashboard for `hot` topics.  
+This project sources [wikipedia event stream](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service) edits and creates a real time 10 top dashboard for `hot` topics.  
 
 ```mermaid
 flowchart TB
