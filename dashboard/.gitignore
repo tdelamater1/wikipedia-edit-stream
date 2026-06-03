@@ -1,0 +1,7 @@
+# Compiled binary (same name as the dir; leading slash anchors it here so it
+# only ignores ./dashboard, the build output of `go build`).
+/dashboard
+
+# Go test/coverage artifacts
+*.test
+*.out
